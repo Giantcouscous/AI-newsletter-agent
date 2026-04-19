@@ -60,6 +60,20 @@ def send_email(draft_text):
     except Exception as e:
         print(f"\n[Email failed: {e}]")
 
+async def transcribe_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+    voice = update.message.voice
+    file = await context.bot.get_file(voice.file_id)
+    file_path = "/tmp/voice_note.ogg"
+    await file.download_to_drive(file_path)
+
+    with open(file_path, "rb") as audio_file:
+        transcription = openai_client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+        )
+    return transcription.text
+
 async def generate_draft(voice_text, user_answers, briefing):
     message = f"WEEKLY BRIEFING:\n{briefing}\n\nAUTHOR'S VOICE NOTE:\n{voice_text}\n\nAUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}\n\nNow write the full Substack draft."
 
@@ -114,19 +128,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Got your voice note! Transcribing now...")
 
-    voice = update.message.voice
-    file = await context.bot.get_file(voice.file_id)
-    file_path = "/tmp/voice_note.ogg"
-    await file.download_to_drive(file_path)
-
-    openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-
-    with open(file_path, "rb") as audio_file:
-        transcription = openai_client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-        )
-    voice_text = transcription.text
+    voice_text = await transcribe_voice(update, context)
     context.user_data["voice_text"] = voice_text
     context.user_data["briefing"] = get_latest_briefing()
 
@@ -176,11 +178,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     questions_text = "".join(questions)
     context.user_data["questions"] = questions_text
 
-    await update.message.reply_text(f"{questions_text}\n\nJust reply here with your answers and I'll write the draft!")
+    await update.message.reply_text(f"{questions_text}\n\nReply with your answers — text or voice note both work!")
 
     return WAITING_FOR_ANSWERS
 
-async def handle_answers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_answers_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
 
     if user_id != ALLOWED_USER_ID:
@@ -192,6 +194,28 @@ async def handle_answers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     briefing = context.user_data.get("briefing", "No briefing available yet.")
 
     await update.message.reply_text("Got your answers! Writing your Substack draft now — this may take a few minutes...")
+
+    draft_text = await generate_draft(voice_text, user_answers, briefing)
+    send_email(draft_text)
+
+    await update.message.reply_text("Done! Your Substack draft has been emailed to you.")
+
+    return ConversationHandler.END
+
+async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+
+    if user_id != ALLOWED_USER_ID:
+        await update.message.reply_text("Sorry, I don't recognise you.")
+        return ConversationHandler.END
+
+    await update.message.reply_text("Got your voice reply! Transcribing now...")
+
+    user_answers = await transcribe_voice(update, context)
+    await update.message.reply_text(f"Transcribed: {user_answers}\n\nWriting your Substack draft now — this may take a few minutes...")
+
+    voice_text = context.user_data.get("voice_text", "")
+    briefing = context.user_data.get("briefing", "No briefing available yet.")
 
     draft_text = await generate_draft(voice_text, user_answers, briefing)
     send_email(draft_text)
@@ -220,7 +244,10 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.VOICE, handle_voice)],
         states={
-            WAITING_FOR_ANSWERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answers)],
+            WAITING_FOR_ANSWERS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answers_text),
+                MessageHandler(filters.VOICE, handle_answers_voice),
+            ],
         },
         fallbacks=[MessageHandler(filters.COMMAND, handle_text)],
     )
