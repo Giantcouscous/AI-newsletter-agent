@@ -22,7 +22,7 @@ def main():
     print(f"Session {session.id} created — streaming...\n")
 
     try:
-        with client.beta.sessions.stream(session_id=session.id) as stream:
+        with client.beta.sessions.events.stream(session_id=session.id) as stream:
             client.beta.sessions.events.send(
                 session_id=session.id,
                 events=[
