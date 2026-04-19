@@ -31,4 +31,5 @@ jobs:
           TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           SUBSTACK_AGENT_ID: ${{ secrets.SUBSTACK_AGENT_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: python telegram_bot.py
