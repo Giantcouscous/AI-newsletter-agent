@@ -1,6 +1,7 @@
 import os
 import asyncio
 import anthropic
+import openai
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -49,10 +50,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_path = "/tmp/voice_note.ogg"
     await file.download_to_drive(file_path)
 
-    client = anthropic.Anthropic()
+    openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
     with open(file_path, "rb") as audio_file:
-        transcription = client.audio.transcriptions.create(
+        transcription = openai_client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
         )
@@ -63,8 +64,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = f"WEEKLY BRIEFING:\n{latest_briefing}\n\nAUTHOR'S NOTE:\n{voice_text}"
 
+    anthropic_client = anthropic.Anthropic()
+
     try:
-        session = client.beta.sessions.create(
+        session = anthropic_client.beta.sessions.create(
             agent=AGENT_ID,
             environment_id=ENVIRONMENT_ID,
         )
@@ -75,8 +78,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_draft = []
 
     try:
-        with client.beta.sessions.events.stream(session_id=session.id) as stream:
-            client.beta.sessions.events.send(
+        with anthropic_client.beta.sessions.events.stream(session_id=session.id) as stream:
+            anthropic_client.beta.sessions.events.send(
                 session_id=session.id,
                 events=[
                     {
