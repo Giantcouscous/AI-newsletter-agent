@@ -2,6 +2,8 @@ import sys
 import os
 import smtplib
 import anthropic
+import requests
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import date
@@ -9,12 +11,49 @@ from datetime import date
 AGENT_ID = "agent_011CaD2HTNeNUGZ5Ruh4qCnz"
 ENVIRONMENT_ID = "env_01X1MZKN477CYnkffM2d77fM"
 
+def save_briefing_to_gist(briefing_text):
+    token = os.environ.get("GIST_TOKEN", "")
+    if not token:
+        print("\n[Gist not saved — GIST_TOKEN not set]")
+        return
+
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    # Check if a gist already exists
+    response = requests.get("https://api.github.com/gists", headers=headers)
+    gists = response.json()
+    existing_gist = None
+    for gist in gists:
+        if "weekly_ai_briefing.txt" in gist["files"]:
+            existing_gist = gist["id"]
+            break
+
+    data = {
+        "description": "Latest Weekly AI Briefing",
+        "public": False,
+        "files": {
+            "weekly_ai_briefing.txt": {
+                "content": briefing_text
+            }
+        }
+    }
+
+    if existing_gist:
+        requests.patch(f"https://api.github.com/gists/{existing_gist}", headers=headers, json=data)
+        print("\n[Briefing updated in Gist]")
+    else:
+        requests.post("https://api.github.com/gists", headers=headers, json=data)
+        print("\n[Briefing saved to new Gist]")
+
 def send_email(briefing_text):
     gmail_address = os.environ.get("GMAIL_ADDRESS", "")
     gmail_password = os.environ.get("GMAIL_APP_PASSWORD", "")
 
     if not gmail_address or not gmail_password:
-        print("\n[Email not sent — GMAIL_ADDRESS or GMAIL_APP_PASSWORD not set]")
+        print("\n[Email not sent — credentials not set]")
         return
 
     msg = MIMEMultipart()
@@ -82,10 +121,12 @@ def main():
                         continue
                     print("\n\n[done]")
                     send_email("".join(full_briefing))
+                    save_briefing_to_gist("".join(full_briefing))
                     break
                 elif event.type == "session.status_terminated":
                     print("\n\n[session terminated]")
                     send_email("".join(full_briefing))
+                    save_briefing_to_gist("".join(full_briefing))
                     break
                 elif event.type == "session.error":
                     print(f"\nSession error: {event}", file=sys.stderr)
