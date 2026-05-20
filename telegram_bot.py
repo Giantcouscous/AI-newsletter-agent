@@ -15,10 +15,12 @@ ALLOWED_USER_ID = int(os.environ.get("TELEGRAM_USER_ID", "0"))
 
 COLLECTING_VOICE = 1
 WAITING_FOR_ANSWERS = 2
+WAITING_FOR_REVISION = 3
 
 def get_latest_briefing():
     token = os.environ.get("GIST_TOKEN", "")
     if not token:
+        print("No GIST_TOKEN found")
         return "No briefing available yet."
 
     headers = {
@@ -28,6 +30,7 @@ def get_latest_briefing():
 
     try:
         response = requests.get("https://api.github.com/gists", headers=headers)
+        print(f"Gist API status: {response.status_code}")
         gists = response.json()
 
         if not isinstance(gists, list):
@@ -41,7 +44,10 @@ def get_latest_briefing():
                 gist_id = gist["id"]
                 detail = requests.get(f"https://api.github.com/gists/{gist_id}", headers=headers)
                 content = detail.json()["files"]["weekly_ai_briefing.txt"]["content"]
+                print("Briefing fetched successfully")
                 return content
+
+        print("No briefing gist found")
 
     except Exception as e:
         print(f"Error fetching briefing: {e}")
@@ -85,14 +91,7 @@ async def transcribe_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     return transcription.text
 
-async def generate_draft(all_voice_text, user_answers, briefing):
-    message = (
-        f"WEEKLY BRIEFING:\n{briefing}\n\n"
-        f"AUTHOR'S VOICE NOTES:\n{all_voice_text}\n\n"
-        f"AUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}\n\n"
-        f"Now write the full Substack draft."
-    )
-
+async def run_agent(prompt):
     anthropic_client = anthropic.Anthropic()
 
     try:
@@ -103,7 +102,7 @@ async def generate_draft(all_voice_text, user_answers, briefing):
     except anthropic.APIError as e:
         return f"Error creating session: {e}"
 
-    full_draft = []
+    result = []
 
     try:
         with anthropic_client.beta.sessions.events.stream(session_id=session.id) as stream:
@@ -112,7 +111,7 @@ async def generate_draft(all_voice_text, user_answers, briefing):
                 events=[
                     {
                         "type": "user.message",
-                        "content": [{"type": "text", "text": message}],
+                        "content": [{"type": "text", "text": prompt}],
                     }
                 ],
             )
@@ -120,7 +119,7 @@ async def generate_draft(all_voice_text, user_answers, briefing):
                 if event.type == "agent.message":
                     for block in event.content:
                         if block.type == "text":
-                            full_draft.append(block.text)
+                            result.append(block.text)
                 elif event.type == "session.status_idle":
                     stop_type = getattr(
                         getattr(event, "stop_reason", None), "type", None
@@ -133,55 +132,7 @@ async def generate_draft(all_voice_text, user_answers, briefing):
     except anthropic.APIError as e:
         return f"API error: {e}"
 
-    return "".join(full_draft)
-
-async def ask_questions(all_voice_text, briefing):
-    question_prompt = (
-        f"WEEKLY BRIEFING:\n{briefing}\n\n"
-        f"AUTHOR'S VOICE NOTES:\n{all_voice_text}\n\n"
-        f"Before writing the draft, ask the author 2-3 short clarifying questions "
-        f"that will help you write a more personalised and specific newsletter post. "
-        f"Ask them as a numbered list, nothing else."
-    )
-
-    anthropic_client = anthropic.Anthropic()
-
-    try:
-        session = anthropic_client.beta.sessions.create(
-            agent=AGENT_ID,
-            environment_id=ENVIRONMENT_ID,
-        )
-    except anthropic.APIError as e:
-        return f"Error creating session: {e}"
-
-    questions = []
-
-    with anthropic_client.beta.sessions.events.stream(session_id=session.id) as stream:
-        anthropic_client.beta.sessions.events.send(
-            session_id=session.id,
-            events=[
-                {
-                    "type": "user.message",
-                    "content": [{"type": "text", "text": question_prompt}],
-                }
-            ],
-        )
-        for event in stream:
-            if event.type == "agent.message":
-                for block in event.content:
-                    if block.type == "text":
-                        questions.append(block.text)
-            elif event.type == "session.status_idle":
-                stop_type = getattr(
-                    getattr(event, "stop_reason", None), "type", None
-                )
-                if stop_type == "requires_action":
-                    continue
-                break
-            elif event.type == "session.status_terminated":
-                break
-
-    return "".join(questions)
+    return "".join(result)
 
 async def handle_voice_collecting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -222,12 +173,23 @@ async def handle_go(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("I don't have any voice notes yet. Send one first!")
         return COLLECTING_VOICE
 
-    await update.message.reply_text("Fetching this week's briefing and preparing questions...")
+    await update.message.reply_text("Fetching this week's briefing and preparing questions — hang on...")
 
     briefing = get_latest_briefing()
     context.user_data["briefing"] = briefing
+    print(f"Briefing length: {len(briefing)} characters")
 
-    questions_text = await ask_questions(all_voice_text, briefing)
+    question_prompt = (
+        f"WEEKLY BRIEFING:\n{briefing}\n\n"
+        f"AUTHOR'S VOICE NOTES:\n{all_voice_text}\n\n"
+        f"Before writing the draft, ask the author exactly 3 short clarifying questions "
+        f"that will make the newsletter more personal and specific. "
+        f"Number them 1, 2, 3. Ask nothing else. Do not write the draft yet."
+    )
+
+    print("Asking questions...")
+    questions_text = await run_agent(question_prompt)
+    print(f"Questions generated: {questions_text[:100]}")
     context.user_data["questions"] = questions_text
 
     await update.message.reply_text(
@@ -249,13 +211,23 @@ async def handle_answers_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.reply_text("Got your answers! Writing your Substack draft now — this may take a few minutes...")
 
-    draft_text = await generate_draft(all_voice_text, user_answers, briefing)
+    draft_prompt = (
+        f"WEEKLY BRIEFING:\n{briefing}\n\n"
+        f"AUTHOR'S VOICE NOTES:\n{all_voice_text}\n\n"
+        f"AUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}\n\n"
+        f"Now write the full Substack draft."
+    )
+
+    draft_text = await run_agent(draft_prompt)
+    context.user_data["last_draft"] = draft_text
     send_email(draft_text)
 
-    await update.message.reply_text("Done! Your Substack draft has been emailed to you.")
-    context.user_data.clear()
+    await update.message.reply_text(
+        "Done! Your Substack draft has been emailed to you.\n\n"
+        "Reply 'longer' if you want a longer version, or 'done' to finish."
+    )
 
-    return ConversationHandler.END
+    return WAITING_FOR_REVISION
 
 async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -272,13 +244,63 @@ async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYP
     all_voice_text = context.user_data.get("all_voice_text", "")
     briefing = context.user_data.get("briefing", "No briefing available yet.")
 
-    draft_text = await generate_draft(all_voice_text, user_answers, briefing)
+    draft_prompt = (
+        f"WEEKLY BRIEFING:\n{briefing}\n\n"
+        f"AUTHOR'S VOICE NOTES:\n{all_voice_text}\n\n"
+        f"AUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}\n\n"
+        f"Now write the full Substack draft."
+    )
+
+    draft_text = await run_agent(draft_prompt)
+    context.user_data["last_draft"] = draft_text
     send_email(draft_text)
 
-    await update.message.reply_text("Done! Your Substack draft has been emailed to you.")
-    context.user_data.clear()
+    await update.message.reply_text(
+        "Done! Your Substack draft has been emailed to you.\n\n"
+        "Reply 'longer' if you want a longer version, or 'done' to finish."
+    )
 
-    return ConversationHandler.END
+    return WAITING_FOR_REVISION
+
+async def handle_revision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+
+    if user_id != ALLOWED_USER_ID:
+        await update.message.reply_text("Sorry, I don't recognise you.")
+        return ConversationHandler.END
+
+    text = update.message.text.lower().strip()
+
+    if text == "done":
+        await update.message.reply_text("All done! Send a new voice note whenever you're ready for next week.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    elif text == "longer":
+        last_draft = context.user_data.get("last_draft", "")
+        await update.message.reply_text("Making it longer — give me a moment...")
+
+        longer_prompt = (
+            f"Here is a Substack newsletter draft:\n\n{last_draft}\n\n"
+            f"Please expand it significantly. Add more depth, more specific detail, "
+            f"more personal reflection, and more context. Keep the same voice and structure "
+            f"but make it substantially longer. Do not add bullet points."
+        )
+
+        longer_draft = await run_agent(longer_prompt)
+        context.user_data["last_draft"] = longer_draft
+        send_email(longer_draft)
+
+        await update.message.reply_text(
+            "Done! The longer version has been emailed to you.\n\n"
+            "Reply 'longer' for even more, or 'done' to finish."
+        )
+
+        return WAITING_FOR_REVISION
+
+    else:
+        await update.message.reply_text("Reply 'longer' for a longer version, or 'done' to finish.")
+        return WAITING_FOR_REVISION
 
 async def handle_text_idle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -295,7 +317,7 @@ async def handle_text_idle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(
-            "Send me a voice note to get started, or say 'go' when you're ready!"
+            "Send me a voice note to get started!"
         )
 
 def main():
@@ -312,6 +334,9 @@ def main():
             WAITING_FOR_ANSWERS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answers_text),
                 MessageHandler(filters.VOICE, handle_answers_voice),
+            ],
+            WAITING_FOR_REVISION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_revision),
             ],
         },
         fallbacks=[MessageHandler(filters.COMMAND, handle_text_idle)],
