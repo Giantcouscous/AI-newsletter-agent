@@ -13,8 +13,8 @@ AGENT_ID = os.environ.get("SUBSTACK_AGENT_ID", "")
 ENVIRONMENT_ID = "env_01X1MZKN477CYnkffM2d77fM"
 ALLOWED_USER_ID = int(os.environ.get("TELEGRAM_USER_ID", "0"))
 
-WAITING_FOR_ANSWERS = 1
-WAITING_FOR_CONFIRMATION = 2
+COLLECTING_VOICE = 1
+WAITING_FOR_ANSWERS = 2
 
 def get_latest_briefing():
     token = os.environ.get("GIST_TOKEN", "")
@@ -85,8 +85,13 @@ async def transcribe_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     return transcription.text
 
-async def generate_draft(voice_text, user_answers, briefing):
-    message = f"WEEKLY BRIEFING:\n{briefing}\n\nAUTHOR'S VOICE NOTE:\n{voice_text}\n\nAUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}\n\nNow write the full Substack draft."
+async def generate_draft(all_voice_text, user_answers, briefing):
+    message = (
+        f"WEEKLY BRIEFING:\n{briefing}\n\n"
+        f"AUTHOR'S VOICE NOTES:\n{all_voice_text}\n\n"
+        f"AUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}\n\n"
+        f"Now write the full Substack draft."
+    )
 
     anthropic_client = anthropic.Anthropic()
 
@@ -130,23 +135,14 @@ async def generate_draft(voice_text, user_answers, briefing):
 
     return "".join(full_draft)
 
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-
-    if user_id != ALLOWED_USER_ID:
-        await update.message.reply_text("Sorry, I don't recognise you.")
-        return ConversationHandler.END
-
-    await update.message.reply_text("Got your voice note! Transcribing now...")
-
-    voice_text = await transcribe_voice(update, context)
-    context.user_data["voice_text"] = voice_text
-    context.user_data["briefing"] = get_latest_briefing()
-
-    await update.message.reply_text(f"Transcribed: {voice_text}\n\nFetching this week's briefing and thinking of questions...")
-
-    briefing = context.user_data["briefing"]
-    question_prompt = f"WEEKLY BRIEFING:\n{briefing}\n\nAUTHOR'S VOICE NOTE:\n{voice_text}\n\nBefore writing the draft, ask the author 2-3 short clarifying questions that will help you write a more personalised and specific newsletter post. Ask them as a numbered list, nothing else."
+async def ask_questions(all_voice_text, briefing):
+    question_prompt = (
+        f"WEEKLY BRIEFING:\n{briefing}\n\n"
+        f"AUTHOR'S VOICE NOTES:\n{all_voice_text}\n\n"
+        f"Before writing the draft, ask the author 2-3 short clarifying questions "
+        f"that will help you write a more personalised and specific newsletter post. "
+        f"Ask them as a numbered list, nothing else."
+    )
 
     anthropic_client = anthropic.Anthropic()
 
@@ -156,8 +152,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             environment_id=ENVIRONMENT_ID,
         )
     except anthropic.APIError as e:
-        await update.message.reply_text(f"Error: {e}")
-        return ConversationHandler.END
+        return f"Error creating session: {e}"
 
     questions = []
 
@@ -186,10 +181,58 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif event.type == "session.status_terminated":
                 break
 
-    questions_text = "".join(questions)
+    return "".join(questions)
+
+async def handle_voice_collecting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+
+    if user_id != ALLOWED_USER_ID:
+        await update.message.reply_text("Sorry, I don't recognise you.")
+        return ConversationHandler.END
+
+    await update.message.reply_text("Got your voice note! Transcribing now...")
+
+    voice_text = await transcribe_voice(update, context)
+
+    existing = context.user_data.get("all_voice_text", "")
+    context.user_data["all_voice_text"] = existing + "\n\n" + voice_text if existing else voice_text
+
+    await update.message.reply_text(
+        f"Transcribed:\n\n{voice_text}\n\n"
+        f"Send another voice note to keep adding, or say 'go' when you're ready."
+    )
+
+    return COLLECTING_VOICE
+
+async def handle_go(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+
+    if user_id != ALLOWED_USER_ID:
+        await update.message.reply_text("Sorry, I don't recognise you.")
+        return ConversationHandler.END
+
+    text = update.message.text.lower().strip()
+
+    if text != "go":
+        await update.message.reply_text("Send a voice note to add more, or say 'go' when ready.")
+        return COLLECTING_VOICE
+
+    all_voice_text = context.user_data.get("all_voice_text", "")
+    if not all_voice_text:
+        await update.message.reply_text("I don't have any voice notes yet. Send one first!")
+        return COLLECTING_VOICE
+
+    await update.message.reply_text("Fetching this week's briefing and preparing questions...")
+
+    briefing = get_latest_briefing()
+    context.user_data["briefing"] = briefing
+
+    questions_text = await ask_questions(all_voice_text, briefing)
     context.user_data["questions"] = questions_text
 
-    await update.message.reply_text(f"{questions_text}\n\nReply with your answers — text or voice note both work!")
+    await update.message.reply_text(
+        f"{questions_text}\n\nReply with your answers — text or voice note both work!"
+    )
 
     return WAITING_FOR_ANSWERS
 
@@ -200,10 +243,19 @@ async def handle_answers_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Sorry, I don't recognise you.")
         return ConversationHandler.END
 
-    context.user_data["user_answers"] = update.message.text
-    await update.message.reply_text(f"Got it! Here's what I heard:\n\n{update.message.text}\n\nReply 'go' when you're ready for me to write the draft, or send another voice note to add more.")
+    user_answers = update.message.text
+    all_voice_text = context.user_data.get("all_voice_text", "")
+    briefing = context.user_data.get("briefing", "No briefing available yet.")
 
-    return WAITING_FOR_CONFIRMATION
+    await update.message.reply_text("Got your answers! Writing your Substack draft now — this may take a few minutes...")
+
+    draft_text = await generate_draft(all_voice_text, user_answers, briefing)
+    send_email(draft_text)
+
+    await update.message.reply_text("Done! Your Substack draft has been emailed to you.")
+    context.user_data.clear()
+
+    return ConversationHandler.END
 
 async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -215,55 +267,20 @@ async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("Got your voice reply! Transcribing now...")
 
     user_answers = await transcribe_voice(update, context)
-    context.user_data["user_answers"] = user_answers
+    await update.message.reply_text(f"Transcribed: {user_answers}\n\nWriting your Substack draft now — this may take a few minutes...")
 
-    await update.message.reply_text(f"Here's what I heard:\n\n{user_answers}\n\nReply 'go' when you're ready for me to write the draft, or send another voice note to add more.")
+    all_voice_text = context.user_data.get("all_voice_text", "")
+    briefing = context.user_data.get("briefing", "No briefing available yet.")
 
-    return WAITING_FOR_CONFIRMATION
+    draft_text = await generate_draft(all_voice_text, user_answers, briefing)
+    send_email(draft_text)
 
-async def handle_confirmation_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
+    await update.message.reply_text("Done! Your Substack draft has been emailed to you.")
+    context.user_data.clear()
 
-    if user_id != ALLOWED_USER_ID:
-        await update.message.reply_text("Sorry, I don't recognise you.")
-        return ConversationHandler.END
+    return ConversationHandler.END
 
-    text = update.message.text.lower().strip()
-
-    if text == "go":
-        await update.message.reply_text("Writing your Substack draft now — this may take a few minutes...")
-
-        voice_text = context.user_data.get("voice_text", "")
-        user_answers = context.user_data.get("user_answers", "")
-        briefing = context.user_data.get("briefing", "No briefing available yet.")
-
-        draft_text = await generate_draft(voice_text, user_answers, briefing)
-        send_email(draft_text)
-
-        await update.message.reply_text("Done! Your Substack draft has been emailed to you.")
-        return ConversationHandler.END
-    else:
-        context.user_data["user_answers"] = context.user_data.get("user_answers", "") + "\n" + update.message.text
-        await update.message.reply_text("Added! Reply 'go' when you're ready, or keep adding more.")
-        return WAITING_FOR_CONFIRMATION
-
-async def handle_confirmation_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-
-    if user_id != ALLOWED_USER_ID:
-        await update.message.reply_text("Sorry, I don't recognise you.")
-        return ConversationHandler.END
-
-    await update.message.reply_text("Transcribing your additional note...")
-
-    extra = await transcribe_voice(update, context)
-    context.user_data["user_answers"] = context.user_data.get("user_answers", "") + "\n" + extra
-
-    await update.message.reply_text(f"Added: {extra}\n\nReply 'go' when you're ready, or keep adding more.")
-
-    return WAITING_FOR_CONFIRMATION
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_text_idle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
 
     if user_id != ALLOWED_USER_ID:
@@ -272,31 +289,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.lower()
     if text == "/start":
-        await update.message.reply_text("Hi! Send me a voice note and I'll write your Substack draft.")
+        await update.message.reply_text(
+            "Hi! Send me a voice note to get started.\n"
+            "You can send as many as you like, then say 'go' when you're ready."
+        )
     else:
-        await update.message.reply_text("Send me a voice note to get started!")
+        await update.message.reply_text(
+            "Send me a voice note to get started, or say 'go' when you're ready!"
+        )
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     app = Application.builder().token(token).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.VOICE, handle_voice)],
+        entry_points=[MessageHandler(filters.VOICE, handle_voice_collecting)],
         states={
+            COLLECTING_VOICE: [
+                MessageHandler(filters.VOICE, handle_voice_collecting),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_go),
+            ],
             WAITING_FOR_ANSWERS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answers_text),
                 MessageHandler(filters.VOICE, handle_answers_voice),
             ],
-            WAITING_FOR_CONFIRMATION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confirmation_text),
-                MessageHandler(filters.VOICE, handle_confirmation_voice),
-            ],
         },
-        fallbacks=[MessageHandler(filters.COMMAND, handle_text)],
+        fallbacks=[MessageHandler(filters.COMMAND, handle_text_idle)],
     )
 
     app.add_handler(conv_handler)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_idle))
     print("Bot is running...")
     app.run_polling()
 
