@@ -26,15 +26,25 @@ def get_latest_briefing():
         "Accept": "application/vnd.github.v3+json"
     }
 
-    response = requests.get("https://api.github.com/gists", headers=headers)
-    gists = response.json()
+    try:
+        response = requests.get("https://api.github.com/gists", headers=headers)
+        gists = response.json()
 
-    for gist in gists:
-        if "weekly_ai_briefing.txt" in gist["files"]:
-            gist_id = gist["id"]
-            detail = requests.get(f"https://api.github.com/gists/{gist_id}", headers=headers)
-            content = detail.json()["files"]["weekly_ai_briefing.txt"]["content"]
-            return content
+        if not isinstance(gists, list):
+            print(f"Unexpected Gist response: {gists}")
+            return "No briefing available yet."
+
+        for gist in gists:
+            if not isinstance(gist, dict):
+                continue
+            if "weekly_ai_briefing.txt" in gist.get("files", {}):
+                gist_id = gist["id"]
+                detail = requests.get(f"https://api.github.com/gists/{gist_id}", headers=headers)
+                content = detail.json()["files"]["weekly_ai_briefing.txt"]["content"]
+                return content
+
+    except Exception as e:
+        print(f"Error fetching briefing: {e}")
 
     return "No briefing available yet."
 
