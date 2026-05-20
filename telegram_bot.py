@@ -14,6 +14,7 @@ ENVIRONMENT_ID = "env_01X1MZKN477CYnkffM2d77fM"
 ALLOWED_USER_ID = int(os.environ.get("TELEGRAM_USER_ID", "0"))
 
 WAITING_FOR_ANSWERS = 1
+WAITING_FOR_CONFIRMATION = 2
 
 def get_latest_briefing():
     token = os.environ.get("GIST_TOKEN", "")
@@ -189,18 +190,10 @@ async def handle_answers_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Sorry, I don't recognise you.")
         return ConversationHandler.END
 
-    user_answers = update.message.text
-    voice_text = context.user_data.get("voice_text", "")
-    briefing = context.user_data.get("briefing", "No briefing available yet.")
+    context.user_data["user_answers"] = update.message.text
+    await update.message.reply_text(f"Got it! Here's what I heard:\n\n{update.message.text}\n\nReply 'go' when you're ready for me to write the draft, or send another voice note to add more.")
 
-    await update.message.reply_text("Got your answers! Writing your Substack draft now — this may take a few minutes...")
-
-    draft_text = await generate_draft(voice_text, user_answers, briefing)
-    send_email(draft_text)
-
-    await update.message.reply_text("Done! Your Substack draft has been emailed to you.")
-
-    return ConversationHandler.END
+    return WAITING_FOR_CONFIRMATION
 
 async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -212,17 +205,53 @@ async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("Got your voice reply! Transcribing now...")
 
     user_answers = await transcribe_voice(update, context)
-    await update.message.reply_text(f"Transcribed: {user_answers}\n\nWriting your Substack draft now — this may take a few minutes...")
+    context.user_data["user_answers"] = user_answers
 
-    voice_text = context.user_data.get("voice_text", "")
-    briefing = context.user_data.get("briefing", "No briefing available yet.")
+    await update.message.reply_text(f"Here's what I heard:\n\n{user_answers}\n\nReply 'go' when you're ready for me to write the draft, or send another voice note to add more.")
 
-    draft_text = await generate_draft(voice_text, user_answers, briefing)
-    send_email(draft_text)
+    return WAITING_FOR_CONFIRMATION
 
-    await update.message.reply_text("Done! Your Substack draft has been emailed to you.")
+async def handle_confirmation_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
 
-    return ConversationHandler.END
+    if user_id != ALLOWED_USER_ID:
+        await update.message.reply_text("Sorry, I don't recognise you.")
+        return ConversationHandler.END
+
+    text = update.message.text.lower().strip()
+
+    if text == "go":
+        await update.message.reply_text("Writing your Substack draft now — this may take a few minutes...")
+
+        voice_text = context.user_data.get("voice_text", "")
+        user_answers = context.user_data.get("user_answers", "")
+        briefing = context.user_data.get("briefing", "No briefing available yet.")
+
+        draft_text = await generate_draft(voice_text, user_answers, briefing)
+        send_email(draft_text)
+
+        await update.message.reply_text("Done! Your Substack draft has been emailed to you.")
+        return ConversationHandler.END
+    else:
+        context.user_data["user_answers"] = context.user_data.get("user_answers", "") + "\n" + update.message.text
+        await update.message.reply_text("Added! Reply 'go' when you're ready, or keep adding more.")
+        return WAITING_FOR_CONFIRMATION
+
+async def handle_confirmation_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+
+    if user_id != ALLOWED_USER_ID:
+        await update.message.reply_text("Sorry, I don't recognise you.")
+        return ConversationHandler.END
+
+    await update.message.reply_text("Transcribing your additional note...")
+
+    extra = await transcribe_voice(update, context)
+    context.user_data["user_answers"] = context.user_data.get("user_answers", "") + "\n" + extra
+
+    await update.message.reply_text(f"Added: {extra}\n\nReply 'go' when you're ready, or keep adding more.")
+
+    return WAITING_FOR_CONFIRMATION
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -247,6 +276,10 @@ def main():
             WAITING_FOR_ANSWERS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answers_text),
                 MessageHandler(filters.VOICE, handle_answers_voice),
+            ],
+            WAITING_FOR_CONFIRMATION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confirmation_text),
+                MessageHandler(filters.VOICE, handle_confirmation_voice),
             ],
         },
         fallbacks=[MessageHandler(filters.COMMAND, handle_text)],
