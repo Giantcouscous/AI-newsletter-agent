@@ -148,8 +148,17 @@ async def handle_voice_collecting(update: Update, context: ContextTypes.DEFAULT_
     existing = context.user_data.get("all_voice_text", "")
     context.user_data["all_voice_text"] = existing + "\n\n" + voice_text if existing else voice_text
 
+    print(f"Sending to agent for transcription editing...")
+
+    edit_prompt = (
+        f"MODE 1 — TRANSCRIPTION EDITOR\n\n"
+        f"Here is the author's voice note transcript:\n\n{voice_text}"
+    )
+
+    edited = await run_agent(edit_prompt)
+
     await update.message.reply_text(
-        f"Transcribed:\n\n{voice_text}\n\n"
+        f"{edited}\n\n"
         f"Send another voice note to keep adding, or say 'go' when you're ready."
     )
 
@@ -209,13 +218,13 @@ async def handle_answers_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     all_voice_text = context.user_data.get("all_voice_text", "")
     briefing = context.user_data.get("briefing", "No briefing available yet.")
 
-    await update.message.reply_text("Got your answers! Writing your Substack draft now — this may take a few minutes...")
+    await update.message.reply_text("Got your answers! Writing your draft now — this may take a few minutes...")
 
     draft_prompt = (
+        f"NOW WRITE THE DRAFT\n\n"
         f"WEEKLY BRIEFING:\n{briefing}\n\n"
         f"AUTHOR'S VOICE NOTES:\n{all_voice_text}\n\n"
-        f"AUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}\n\n"
-        f"Now write the full Substack draft."
+        f"AUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}"
     )
 
     draft_text = await run_agent(draft_prompt)
@@ -223,8 +232,8 @@ async def handle_answers_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     send_email(draft_text)
 
     await update.message.reply_text(
-        "Done! Your Substack draft has been emailed to you.\n\n"
-        "Reply 'longer' if you want a longer version, or 'done' to finish."
+        "Done! Your draft has been emailed to you.\n\n"
+        "Reply 'longer' for a longer version, or 'done' to finish."
     )
 
     return WAITING_FOR_REVISION
@@ -239,16 +248,16 @@ async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("Got your voice reply! Transcribing now...")
 
     user_answers = await transcribe_voice(update, context)
-    await update.message.reply_text(f"Transcribed: {user_answers}\n\nWriting your Substack draft now — this may take a few minutes...")
+    await update.message.reply_text(f"Transcribed: {user_answers}\n\nWriting your draft now — this may take a few minutes...")
 
     all_voice_text = context.user_data.get("all_voice_text", "")
     briefing = context.user_data.get("briefing", "No briefing available yet.")
 
     draft_prompt = (
+        f"NOW WRITE THE DRAFT\n\n"
         f"WEEKLY BRIEFING:\n{briefing}\n\n"
         f"AUTHOR'S VOICE NOTES:\n{all_voice_text}\n\n"
-        f"AUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}\n\n"
-        f"Now write the full Substack draft."
+        f"AUTHOR'S ANSWERS TO YOUR QUESTIONS:\n{user_answers}"
     )
 
     draft_text = await run_agent(draft_prompt)
@@ -256,8 +265,8 @@ async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYP
     send_email(draft_text)
 
     await update.message.reply_text(
-        "Done! Your Substack draft has been emailed to you.\n\n"
-        "Reply 'longer' if you want a longer version, or 'done' to finish."
+        "Done! Your draft has been emailed to you.\n\n"
+        "Reply 'longer' for a longer version, or 'done' to finish."
     )
 
     return WAITING_FOR_REVISION
@@ -281,10 +290,11 @@ async def handle_revision(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Making it longer — give me a moment...")
 
         longer_prompt = (
-            f"Here is a Substack newsletter draft:\n\n{last_draft}\n\n"
-            f"Please expand it significantly. Add more depth, more specific detail, "
-            f"more personal reflection, and more context. Keep the same voice and structure "
-            f"but make it substantially longer. Do not add bullet points."
+            f"NOW WRITE THE DRAFT\n\n"
+            f"Here is the current draft:\n\n{last_draft}\n\n"
+            f"Expand it significantly. Add more depth, more specific detail, "
+            f"more context. Keep the same plain neutral tone. "
+            f"No bullet points. Short paragraphs."
         )
 
         longer_draft = await run_agent(longer_prompt)
