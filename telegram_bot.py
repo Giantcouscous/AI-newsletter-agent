@@ -1,4 +1,5 @@
 import os
+import asyncio
 import anthropic
 import openai
 import smtplib
@@ -81,15 +82,22 @@ async def transcribe_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
     voice = update.message.voice
     file = await context.bot.get_file(voice.file_id)
-    file_path = "/tmp/voice_note.ogg"
+    file_path = f"/tmp/voice_{voice.file_id}.ogg"
     await file.download_to_drive(file_path)
 
-    with open(file_path, "rb") as audio_file:
-        transcription = openai_client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-        )
-    return transcription.text
+    try:
+        def _transcribe():
+            with open(file_path, "rb") as audio_file:
+                return openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                ).text
+
+        return await asyncio.to_thread(_transcribe)
+
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 async def run_agent(prompt):
     anthropic_client = anthropic.Anthropic()
