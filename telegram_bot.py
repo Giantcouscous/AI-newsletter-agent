@@ -319,7 +319,6 @@ async def handle_text_idle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-
     app = Application.builder().token(token).build()
 
     conv_handler = ConversationHandler(
@@ -342,14 +341,8 @@ def main():
 
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_idle))
-
-    print("Bot starting via webhook...")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL,
-        drop_pending_updates=True,
-    )
+    print("Bot is running...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
