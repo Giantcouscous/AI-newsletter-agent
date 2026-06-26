@@ -318,7 +318,16 @@ async def handle_text_idle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    app = Application.builder().token(token).build()
+    
+    from telegram.request import HTTPXRequest
+    request = HTTPXRequest(
+        read_timeout=60,
+        write_timeout=60,
+        connect_timeout=60,
+        pool_timeout=60
+    )
+    
+    app = Application.builder().token(token).request(request).build()
 
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.VOICE, handle_voice_collecting)],
