@@ -2,10 +2,7 @@ import os
 import asyncio
 import anthropic
 import openai
-import smtplib
 import requests
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import date
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -54,29 +51,6 @@ def get_latest_briefing():
         print(f"Error fetching briefing: {e}")
 
     return "No briefing available yet."
-
-def send_email(draft_text):
-    gmail_address = os.environ.get("GMAIL_ADDRESS", "")
-    gmail_password = os.environ.get("GMAIL_APP_PASSWORD", "")
-
-    if not gmail_address or not gmail_password:
-        print("\n[Email not sent — credentials not set]")
-        return
-
-    msg = MIMEMultipart()
-    msg["From"] = gmail_address
-    msg["To"] = gmail_address
-    msg["Subject"] = f"Your Substack Draft — {date.today().strftime('%B %d, %Y')}"
-    msg.attach(MIMEText(draft_text, "plain"))
-
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(gmail_address, gmail_password)
-            server.send_message(msg)
-        print("\n[Email sent successfully!]")
-    except Exception as e:
-        print(f"\n[Email failed: {e}]")
 
 async def transcribe_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
@@ -141,6 +115,19 @@ async def run_agent(prompt):
         return f"API error: {e}"
 
     return "".join(result)
+
+async def send_draft(update: Update, draft_text: str, label: str = "Your draft"):
+    header = f"📝 {label} — {date.today().strftime('%B %d, %Y')}\n\n"
+    full_message = header + draft_text
+
+    # Telegram has a 4096 character limit per message — split if needed
+    if len(full_message) <= 4096:
+        await update.message.reply_text(full_message)
+    else:
+        await update.message.reply_text(header + "Draft is long — sending in parts:")
+        chunks = [draft_text[i:i+4000] for i in range(0, len(draft_text), 4000)]
+        for i, chunk in enumerate(chunks, 1):
+            await update.message.reply_text(f"Part {i}:\n\n{chunk}")
 
 async def handle_voice_collecting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -237,12 +224,9 @@ async def handle_answers_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     draft_text = await run_agent(draft_prompt)
     context.user_data["last_draft"] = draft_text
-    send_email(draft_text)
 
-    await update.message.reply_text(
-        "Done! Your draft has been emailed to you.\n\n"
-        "Reply 'longer' for a longer version, or 'done' to finish."
-    )
+    await send_draft(update, draft_text)
+    await update.message.reply_text("Reply 'longer' for a longer version, or 'done' to finish.")
 
     return WAITING_FOR_REVISION
 
@@ -270,12 +254,9 @@ async def handle_answers_voice(update: Update, context: ContextTypes.DEFAULT_TYP
 
     draft_text = await run_agent(draft_prompt)
     context.user_data["last_draft"] = draft_text
-    send_email(draft_text)
 
-    await update.message.reply_text(
-        "Done! Your draft has been emailed to you.\n\n"
-        "Reply 'longer' for a longer version, or 'done' to finish."
-    )
+    await send_draft(update, draft_text)
+    await update.message.reply_text("Reply 'longer' for a longer version, or 'done' to finish.")
 
     return WAITING_FOR_REVISION
 
@@ -307,12 +288,9 @@ async def handle_revision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         longer_draft = await run_agent(longer_prompt)
         context.user_data["last_draft"] = longer_draft
-        send_email(longer_draft)
 
-        await update.message.reply_text(
-            "Done! The longer version has been emailed to you.\n\n"
-            "Reply 'longer' for even more, or 'done' to finish."
-        )
+        await send_draft(update, longer_draft, label="Longer version")
+        await update.message.reply_text("Reply 'longer' for even more, or 'done' to finish.")
 
         return WAITING_FOR_REVISION
 
