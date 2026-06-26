@@ -10,6 +10,8 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes, Con
 AGENT_ID = os.environ.get("SUBSTACK_AGENT_ID", "")
 ENVIRONMENT_ID = "env_01X1MZKN477CYnkffM2d77fM"
 ALLOWED_USER_ID = int(os.environ.get("TELEGRAM_USER_ID", "0"))
+WEBHOOK_URL = "https://voicenote-production-8c14.up.railway.app/webhook"
+PORT = int(os.environ.get("PORT", "8080"))
 
 COLLECTING_VOICE = 1
 WAITING_FOR_ANSWERS = 2
@@ -120,7 +122,6 @@ async def send_draft(update: Update, draft_text: str, label: str = "Your draft")
     header = f"📝 {label} — {date.today().strftime('%B %d, %Y')}\n\n"
     full_message = header + draft_text
 
-    # Telegram has a 4096 character limit per message — split if needed
     if len(full_message) <= 4096:
         await update.message.reply_text(full_message)
     else:
@@ -318,16 +319,8 @@ async def handle_text_idle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    
-    from telegram.request import HTTPXRequest
-    request = HTTPXRequest(
-        read_timeout=60,
-        write_timeout=60,
-        connect_timeout=60,
-        pool_timeout=60
-    )
-    
-    app = Application.builder().token(token).request(request).build()
+
+    app = Application.builder().token(token).build()
 
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.VOICE, handle_voice_collecting)],
@@ -349,8 +342,14 @@ def main():
 
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_idle))
-    print("Bot is running...")
-    app.run_polling()
+
+    print("Bot starting via webhook...")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=WEBHOOK_URL,
+        drop_pending_updates=True,
+    )
 
 if __name__ == "__main__":
     main()
