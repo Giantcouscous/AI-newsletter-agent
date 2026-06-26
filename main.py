@@ -1,15 +1,13 @@
 import sys
 import os
-import smtplib
 import anthropic
 import requests
-import json
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import date
 
 AGENT_ID = "agent_011CaD2HTNeNUGZ5Ruh4qCnz"
 ENVIRONMENT_ID = "env_01X1MZKN477CYnkffM2d77fM"
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = "5858773467"
 
 def save_briefing_to_gist(briefing_text):
     token = os.environ.get("GIST_TOKEN", "")
@@ -22,7 +20,6 @@ def save_briefing_to_gist(briefing_text):
         "Accept": "application/vnd.github.v3+json"
     }
 
-    # Check if a gist already exists
     response = requests.get("https://api.github.com/gists", headers=headers)
     gists = response.json()
     existing_gist = None
@@ -48,39 +45,40 @@ def save_briefing_to_gist(briefing_text):
         requests.post("https://api.github.com/gists", headers=headers, json=data)
         print("\n[Briefing saved to new Gist]")
 
-def send_email(briefing_text):
-    gmail_address = os.environ.get("GMAIL_ADDRESS", "")
-    gmail_password = os.environ.get("GMAIL_APP_PASSWORD", "")
-
-    if not gmail_address or not gmail_password:
-        print("\n[Email not sent — credentials not set]")
+def send_telegram(briefing_text):
+    if not TELEGRAM_BOT_TOKEN:
+        print("\n[Telegram not sent — TELEGRAM_BOT_TOKEN not set]")
         return
 
-    msg = MIMEMultipart()
-    msg["From"] = gmail_address
-    msg["To"] = gmail_address
-    msg["Subject"] = f"Your Weekly AI Briefing — {date.today().strftime('%B %d, %Y')}"
-    msg.attach(MIMEText(briefing_text, "plain"))
+    header = f"📰 Your Weekly AI Briefing — {date.today().strftime('%B %d, %Y')}\n\n"
+    full_message = header + briefing_text
 
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(gmail_address, gmail_password)
-            server.send_message(msg)
-        print("\n[Email sent successfully!]")
-    except Exception as e:
-        print(f"\n[Email failed: {e}]")
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    # Telegram limit is 4096 chars — split if needed
+    if len(full_message) <= 4096:
+        chunks = [full_message]
+    else:
+        chunks = [header + "Briefing is long — sending in parts:"]
+        parts = [briefing_text[i:i+4000] for i in range(0, len(briefing_text), 4000)]
+        for i, part in enumerate(parts, 1):
+            chunks.append(f"Part {i}:\n\n{part}")
+
+    for chunk in chunks:
+        try:
+            response = requests.post(url, json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": chunk
+            })
+            if response.status_code == 200:
+                print("\n[Telegram message sent successfully!]")
+            else:
+                print(f"\n[Telegram failed: {response.text}]")
+        except Exception as e:
+            print(f"\n[Telegram error: {e}]")
 
 def main():
-    gmail_address = os.environ.get("GMAIL_ADDRESS", "")
-    gmail_password = os.environ.get("GMAIL_APP_PASSWORD", "")
-
     user_message = " ".join(sys.argv[1:]) or "Send the weekly AI newsletter."
-
-    if gmail_address and gmail_password:
-        message = f"Gmail address: {gmail_address}\nGmail app password: {gmail_password}\n\n{user_message}"
-    else:
-        message = user_message
 
     client = anthropic.Anthropic()
     try:
@@ -103,7 +101,7 @@ def main():
                 events=[
                     {
                         "type": "user.message",
-                        "content": [{"type": "text", "text": message}],
+                        "content": [{"type": "text", "text": user_message}],
                     }
                 ],
             )
@@ -120,13 +118,15 @@ def main():
                     if stop_type == "requires_action":
                         continue
                     print("\n\n[done]")
-                    send_email("".join(full_briefing))
-                    save_briefing_to_gist("".join(full_briefing))
+                    briefing = "".join(full_briefing)
+                    send_telegram(briefing)
+                    save_briefing_to_gist(briefing)
                     break
                 elif event.type == "session.status_terminated":
                     print("\n\n[session terminated]")
-                    send_email("".join(full_briefing))
-                    save_briefing_to_gist("".join(full_briefing))
+                    briefing = "".join(full_briefing)
+                    send_telegram(briefing)
+                    save_briefing_to_gist(briefing)
                     break
                 elif event.type == "session.error":
                     print(f"\nSession error: {event}", file=sys.stderr)
